@@ -125,6 +125,7 @@ void ocp_nlp_sqp_opts_initialize_default(void *config_, void *dims_, void *opts_
 
     opts->qp_warm_start = 0;
     opts->warm_start_first_qp = false;
+    opts->rti_phase = 0;
     opts->print_level = 0;
 
     // overwrite default submodules opts
@@ -233,6 +234,15 @@ void ocp_nlp_sqp_opts_set(void *config_, void *opts_, const char *field, void* v
         {
             bool* warm_start_first_qp = (bool *) value;
             opts->warm_start_first_qp = *warm_start_first_qp;
+        }
+        else if (!strcmp(field, "rti_phase"))
+        {
+            int* rti_phase = (int *) value;
+            if (*rti_phase < 0 || *rti_phase > 0) {
+                printf("\nerror: ocp_nlp_sqp_opts_set: invalid value for rti_phase field."); 
+                printf("possible values are: 0\n");
+                exit(1);
+            } else opts->rti_phase = *rti_phase;
         }
         else if (!strcmp(field, "print_level"))
         {
@@ -473,6 +483,7 @@ int ocp_nlp_sqp(void *config_, void *dims_, void *nlp_in_, void *nlp_out_,
 	double tmp_time;
     mem->time_qp_sol = 0.0;
     mem->time_qp_solver_call = 0.0;
+    mem->time_qp_xcond = 0.0;
     mem->time_lin = 0.0;
     mem->time_reg = 0.0;
     mem->time_tot = 0.0;
@@ -585,7 +596,7 @@ int ocp_nlp_sqp(void *config_, void *dims_, void *nlp_in_, void *nlp_out_,
         {
             printf("\n------- sqp iter %d (max_iter %d) --------\n", 
                 sqp_iter, opts->max_iter);
-            if (opts->print_level > sqp_iter)
+            if (opts->print_level > sqp_iter + 1)
                 print_ocp_qp_in(nlp_mem->qp_in);
         }
 
@@ -668,6 +679,8 @@ int ocp_nlp_sqp(void *config_, void *dims_, void *nlp_in_, void *nlp_out_,
 
 		qp_solver->memory_get(qp_solver, nlp_mem->qp_solver_mem, "time_qp_solver_call", &tmp_time);
 		mem->time_qp_solver_call += tmp_time;
+		qp_solver->memory_get(qp_solver, nlp_mem->qp_solver_mem, "time_qp_xcond", &tmp_time);
+		mem->time_qp_xcond += tmp_time;
 
         // compute correct dual solution in case of Hessian regularization
         acados_tic(&timer1);
@@ -726,10 +739,10 @@ int ocp_nlp_sqp(void *config_, void *dims_, void *nlp_in_, void *nlp_out_,
             omp_set_num_threads(num_threads_bkp);
 #endif
 
-            if (opts->print_level > 0)
+            if (opts->print_level > 1)
             {
                 printf("\n Failed to solve the following QP:\n");
-                if (opts->print_level > sqp_iter)
+                if (opts->print_level > sqp_iter + 1)
                     print_ocp_qp_in(nlp_mem->qp_in);
             }
 
@@ -787,10 +800,6 @@ int ocp_nlp_sqp(void *config_, void *dims_, void *nlp_in_, void *nlp_out_,
 
     if (opts->print_level > 0)
     {
-        // print_ocp_qp_in(nlp_mem->qp_in);
-
-        printf("\n ocp_nlp_sqp: maximum iterations reached, last QP input above.\n");
-
         printf("Residuals: stat: %e, eq: %e, ineq: %e, comp: %e.\n", mem->nlp_res->inf_norm_res_g,
             mem->nlp_res->inf_norm_res_b, mem->nlp_res->inf_norm_res_d, mem->nlp_res->inf_norm_res_m );
     }
@@ -946,10 +955,15 @@ void ocp_nlp_sqp_get(void *config_, void *dims_, void *mem_, const char *field, 
         double *value = return_value_;
         *value = mem->time_qp_sol;
     }
-    else if (!strcmp("time_qp_solver_call", field))
+    else if (!strcmp("time_qp_solver", field) || !strcmp("time_qp_solver_call", field))
     {
         double *value = return_value_;
         *value = mem->time_qp_solver_call;
+    }
+    else if (!strcmp("time_qp_xcond", field))
+    {
+        double *value = return_value_;
+        *value = mem->time_qp_xcond;
     }
     else if (!strcmp("time_lin", field))
     {
@@ -961,6 +975,18 @@ void ocp_nlp_sqp_get(void *config_, void *dims_, void *mem_, const char *field, 
         double *value = return_value_;
         *value = mem->time_reg;
     }
+    else if (!strcmp("time_sim", field) || !strcmp("time_sim_ad", field) || !strcmp("time_sim_la", field))
+    {
+		double tmp = 0.0;
+		double *ptr = return_value_;
+		int N = dims->N;
+		int ii;
+		for (ii=0; ii<N; ii++)
+		{
+			config->dynamics[ii]->memory_get(config->dynamics[ii], dims->dynamics[ii], mem->nlp_mem->dynamics[ii], field, &tmp);
+			*ptr += tmp;
+		}
+	}
     else if (!strcmp("nlp_res", field))
     {
         ocp_nlp_res **value = return_value_;
@@ -970,6 +996,17 @@ void ocp_nlp_sqp_get(void *config_, void *dims_, void *mem_, const char *field, 
     {
         double **value = return_value_;
         *value = mem->stat;
+    }
+    else if (!strcmp("statistics", field))
+    {
+        int n_row = mem->stat_m<mem->sqp_iter+1 ? mem->stat_m : mem->sqp_iter+1;
+        double *value = return_value_;
+        for (int ii=0; ii<n_row; ii++)
+        {
+            value[ii+0] = ii;
+            for (int jj=0; jj<mem->stat_n; jj++)
+                value[ii+(jj+1)*n_row] = mem->stat[jj+ii*mem->stat_n];
+        }
     }
     else if (!strcmp("stat_m", field))
     {

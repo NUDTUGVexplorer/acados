@@ -41,9 +41,9 @@ from copy import deepcopy
 
 from .generate_c_code_explicit_ode import generate_c_code_explicit_ode
 from .generate_c_code_implicit_ode import generate_c_code_implicit_ode
-from .AcadosSim import AcadosSim
-from .AcadosOcp import AcadosOcp
-from .AcadosModel import acados_model_strip_casadi_symbolics
+from .acados_sim import AcadosSim
+from .acados_ocp import AcadosOcp
+from .acados_model import acados_model_strip_casadi_symbolics
 from .utils import is_column, render_template, format_class_dict, np_array_to_list, make_model_consistent
 
 
@@ -157,6 +157,7 @@ def sim_generate_casadi_functions(acados_sim):
         opts = dict(generate_hess=1)
         generate_c_code_implicit_ode(model, opts)
 
+
 class AcadosSimSolver:
     def __init__(self, acados_sim_, json_file='acados_sim.json'):
 
@@ -223,7 +224,8 @@ class AcadosSimSolver:
             'xn': nx,
             'u': nu,
             'S_forw': nx*(nx+nu),
-            'Sx': nx*nx
+            'Sx': nx*nx,
+            'Su': nx*nu,
         }
 
         self.settable = ['S_adj', 'S_forw', 'T', 'x', 'u', 'xdot', 'z', 'Su', 'Sx', 'p']
@@ -252,8 +254,6 @@ class AcadosSimSolver:
 
         else:
             raise Exception(f'acados_solver.set(): Unknown field {field}, available fiels are {",".join(self.gettable.keys())}')
-
-        # out = cast((out), POINTER(c_double))
 
         return out
 

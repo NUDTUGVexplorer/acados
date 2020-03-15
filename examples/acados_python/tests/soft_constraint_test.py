@@ -31,6 +31,9 @@
 # POSSIBILITY OF SUCH DAMAGE.;
 #
 
+import sys
+sys.path.insert(0, '../getting_started/common')
+
 from acados_template import AcadosOcp, AcadosOcpSolver, AcadosSimSolver
 from export_pendulum_ode_model import export_pendulum_ode_model
 from utils import plot_pendulum
@@ -183,7 +186,7 @@ def run_closed_loop_experiment(FORMULATION):
     simX[Nsim,:] = xcurrent
 
     # plot results
-    plot_pendulum(Tf/N, Fmax, simU, simX)
+    plot_pendulum(Tf/N, Fmax, simU, simX, latexify=False)
 
     # store results
     np.savetxt('test_results/simX_soft_formulation_' + str(FORMULATION), simX)

@@ -31,39 +31,56 @@
 # POSSIBILITY OF SUCH DAMAGE.;
 #
 
-import itertools as it
-import os
-from random import sample
+import sys
+sys.path.insert(0, '../common')
 
-TEST_SAMPLE = True # only test random sample instaed of all possible combinations
-SAMPLE_SIZE = 20
+from acados_template import AcadosSim, AcadosSimSolver
+from export_pendulum_ode_model import export_pendulum_ode_model
+from utils import plot_pendulum
+import numpy as np
+import matplotlib.pyplot as plt
 
-COST_MODULE_values = ['EXTERNAL', 'LS', 'NLS']
-COST_MODULE_N_values = ['EXTERNAL', 'LS', 'NLS']
-QP_SOLVER_values = ['PARTIAL_CONDENSING_HPIPM', 'FULL_CONDENSING_HPIPM', 'FULL_CONDENSING_QPOASES']
-INTEGRATOR_TYPE_values = ['ERK', 'IRK', 'GNSF']
-SOLVER_TYPE_values = ['SQP', 'SQP_RTI']
+sim = AcadosSim()
 
-test_parameters = { 'COST_MODULE_values': COST_MODULE_values,
-                    'COST_MODULE_N_values': COST_MODULE_N_values,
-                    'QP_SOLVER_values': QP_SOLVER_values,
-                    'INTEGRATOR_TYPE_values': INTEGRATOR_TYPE_values,
-                    'SOLVER_TYPE_values': SOLVER_TYPE_values}
+# export model 
+model = export_pendulum_ode_model()
 
-all_test_parameters = sorted(test_parameters)
-combinations = list(it.product(*(test_parameters[Name] for Name in all_test_parameters)))
+# set model_name 
+sim.model = model
 
-if TEST_SAMPLE:
-    combinations = sample(combinations, SAMPLE_SIZE)
+Tf = 0.1
+nx = model.x.size()[0]
+nu = model.u.size()[0]
+N = 200
 
-for parameters in combinations:
-    os_cmd = ("python test_ocp_setting.py" +
-        " --COST_MODULE {}".format(parameters[0]) +
-        " --COST_MODULE_N {}".format(parameters[1]) +
-        " --INTEGRATOR_TYPE {}".format(parameters[2]) +
-        " --QP_SOLVER {}".format(parameters[3]) +
-        " --SOLVER_TYPE {}".format(parameters[4]))
-    status = os.system(os_cmd)
-    if status != 0:
-        raise Exception("acados status  = {} on test {}. Exiting\n".format(status, parameters))
+# set simulation time
+sim.solver_options.T = Tf
+# set options
+sim.solver_options.num_stages = 4
+sim.solver_options.num_steps = 3
+sim.solver_options.newton_iter = 3 # for implicit integrator
 
+
+# create
+acados_integrator = AcadosSimSolver(sim)
+
+simX = np.ndarray((N+1, nx))
+x0 = np.array([0.0, np.pi+1, 0.0, 0.0])
+u0 = np.array([0.0])
+acados_integrator.set("u", u0)
+
+simX[0,:] = x0
+
+for i in range(N):
+    # set initial state
+    acados_integrator.set("x", simX[i,:])
+    # solve
+    status = acados_integrator.solve()
+    # get solution
+    simX[i+1,:] = acados_integrator.get("x")
+
+if status != 0:
+    raise Exception('acados returned status {}. Exiting.'.format(status))
+
+# plot results
+plot_pendulum(Tf/N, 10, np.zeros((N, nu)), simX, latexify=False)

@@ -46,8 +46,8 @@ from .generate_c_code_gnsf import generate_c_code_gnsf
 from .generate_c_code_constraint import generate_c_code_constraint
 from .generate_c_code_nls_cost import generate_c_code_nls_cost
 from .generate_c_code_external_cost import generate_c_code_external_cost
-from .AcadosOcp import AcadosOcp
-from .AcadosModel import acados_model_strip_casadi_symbolics
+from .acados_ocp import AcadosOcp
+from .acados_model import acados_model_strip_casadi_symbolics
 from .utils import is_column, is_empty, casadi_length, render_template, acados_class2dict,\
      format_class_dict, ocp_check_json_against_layout, np_array_to_list, make_model_consistent
 
@@ -65,19 +65,19 @@ def make_ocp_dims_consistent(acados_ocp):
         this_shape = constraints.lbx_0.shape
         other_shape = constraints.ubx_0.shape
         if not this_shape == other_shape:
-            raise Exception("lbx_0, ubx_0 have different shapes!")
+            raise Exception('lbx_0, ubx_0 have different shapes!')
         if not is_column(constraints.lbx_0):
-            raise Exception("lbx_0, ubx_0 must be column vectors!")
+            raise Exception('lbx_0, ubx_0 must be column vectors!')
 
         dims.nbx_0 = constraints.lbx_0.size
     else:
-        raise Exception("lbx_0, ubx_0 have different shapes!")
+        raise Exception('lbx_0, ubx_0 have different shapes!')
 
     # nx
     if is_column(model.x):
         dims.nx = casadi_length(model.x)
     else:
-        raise Exception("model.x should be column vector!")
+        raise Exception('model.x should be column vector!')
 
     # nu
     if is_empty(model.u):
@@ -250,7 +250,7 @@ def ocp_render_templates(acados_ocp, json_file):
         json_file=json_file)
 
     if not os.path.exists(json_path):
-        raise Exception("{} not found!".format(json_path))
+        raise Exception('{} not found!'.format(json_path))
 
     template_dir = 'c_generated_code/'
 
@@ -327,15 +327,15 @@ def ocp_render_templates(acados_ocp, json_file):
     # nonlinear cost function
     if acados_ocp.cost.cost_type == 'NONLINEAR_LS':
         template_dir = 'c_generated_code/{}_cost/'.format(name)
-        in_file = 'r_cost.in.h'
-        out_file = '{}_r_cost.h'.format(name)
+        in_file = 'cost_y_fun.in.h'
+        out_file = '{}_cost_y_fun.h'.format(name)
         render_template(in_file, out_file, template_dir, json_path)
 
     # terminal nonlinear cost function
     if acados_ocp.cost.cost_type_e == 'NONLINEAR_LS':
         template_dir = 'c_generated_code/{}_cost/'.format(name)
-        in_file = 'r_e_cost.in.h'
-        out_file = '{}_r_e_cost.h'.format(name)
+        in_file = 'cost_y_e_fun.in.h'
+        out_file = '{}_cost_y_e_fun.h'.format(name)
         render_template(in_file, out_file, template_dir, json_path)
 
     # external cost
@@ -414,11 +414,21 @@ class AcadosOcpSolver:
         self.acados_ocp = acados_ocp
 
 
-    def solve(self):
+    def solve(self, rti_phase=0):
         """
         solve the ocp with current input
+        :param rti_phase: 0 = preparation + feedback, 1 = preparation only,
+         2 = feedback only (if SQP_RTI is used, otherwise only 0 (default) is allowed)
         """
-        status = self.shared_lib.acados_solve()
+        if isinstance(rti_phase, int) == False or rti_phase < 0 or rti_phase > 2: 
+            raise Exception('AcadosOcpSolver.solve(): argument \'rti_phase\' can ' 
+                'take only values 0, 1, 2 for SQP-RTI-type solvers')
+        if self.acados_ocp.solver_options.nlp_solver_type != 'SQP_RTI' and rti_phase > 0:
+            raise Exception('AcadosOcpSolver.solve(): argument \'rti_phase\' can ' 
+                'take only value 0 for SQP-type solvers')
+        self.shared_lib.acados_solve.argtypes = [c_int]
+
+        status = self.shared_lib.acados_solve(rti_phase)
         return status
 
 
@@ -426,16 +436,16 @@ class AcadosOcpSolver:
         """
         get the last solution of the solver:
             :param stage: integer corresponding to shooting node
-            :param field_: string in ['x', 'u', 'z']
+            :param field_: string in ['x', 'u', 'z', 'pi']
         """
 
-        out_fields = ['x', 'u', 'z']
+        out_fields = ['x', 'u', 'z', 'pi']
         field = field_
         field = field.encode('utf-8')
 
         if (field_ not in out_fields):
-            raise Exception("acados_solver: {} is not a valid key for method `set(value)`.\
-                    \n Possible values are {}. Exiting.".format(out_fields))
+            raise Exception('AcadosOcpSolver.get(): {} is an invalid argument.\
+                    \n Possible values are {}. Exiting.'.format(out_fields))
 
         self.shared_lib.ocp_nlp_dims_get_from_attr.argtypes = \
             [c_void_p, c_void_p, c_void_p, c_int, c_char_p]
@@ -452,9 +462,37 @@ class AcadosOcpSolver:
         self.shared_lib.ocp_nlp_out_get(self.nlp_config, \
             self.nlp_dims, self.nlp_out, stage_, field, out_data)
 
-        # out = cast((out), POINTER(c_double))
-
         return out
+
+
+    def print_statistics(self):
+        stat = self.get_stats("statistics")
+
+        if self.acados_ocp.solver_options.nlp_solver_type == 'SQP':
+            print('\niter\tres_stat\tres_eq\t\tres_ineq\tres_comp\tqp_stat\tqp_iter')
+            if stat.shape[0]>7:
+                print('\tqp_res_stat\tqp_res_eq\tqp_res_ineq\tqp_res_comp')
+            for jj in range(stat.shape[1]):
+                print('{:d}\t{:e}\t{:e}\t{:e}\t{:e}\t{:d}\t{:d}'.format( \
+                     int(stat[0][jj]), stat[1][jj], stat[2][jj], \
+                     stat[3][jj], stat[4][jj], int(stat[5][jj]), int(stat[6][jj])))
+                if stat.shape[0]>7:
+                    print('\t{:e}\t{:e}\t{:e}\t{:e}'.format( \
+                        stat[7][jj], stat[8][jj], stat[9][jj], stat[10][jj]))
+            print('\n')
+        elif self.acados_ocp.solver_options.nlp_solver_type == 'SQP_RTI':
+            print('\niter\tqp_stat\tqp_iter')
+            if stat.shape[0]>3:
+                print('\tqp_res_stat\tqp_res_eq\tqp_res_ineq\tqp_res_comp')
+            for jj in range(stat.shape[1]):
+                print('{:d}\t{:d}\t{:d}'.format( int(stat[0][jj]), int(stat[1][jj]), int(stat[2][jj])))
+                if stat.shape[0]>3:
+                    print('\t{:e}\t{:e}\t{:e}\t{:e}'.format( \
+                         stat[3][jj], stat[4][jj], stat[5][jj], stat[6][jj]))
+            print('\n')
+
+        return
+
 
     def get_stats(self, field_):
         """
@@ -467,18 +505,33 @@ class AcadosOcpSolver:
                   'time_qp',   # cpu time qp solution
                   'time_qp_solver_call',  # cpu time inside qp solver (without converting the QP)
                   'time_reg',  # cpu time regularization
-                  'sqp_iter'  # number of SQP iterations
+                  'sqp_iter',  # number of SQP iterations
+                  'statistics',  # table with info about last iteration
+                  'stat_m',
+                  'stat_n',
                 ]
 
         field = field_
         field = field.encode('utf-8')
         if (field_ not in fields):
-            raise Exception("acados_solver: {} is not a valid key for method `set(value)`.\
-                    \n Possible values are {}. Exiting.".format(fields, fields))
+            raise Exception('AcadosOcpSolver.get_stats(): {} is not a valid argument.\
+                    \n Possible values are {}. Exiting.'.format(fields, fields))
 
-        if field_ == 'sqp_iter':
+        if field_ in ['sqp_iter', 'stat_m', 'stat_n']:
             out = np.ascontiguousarray(np.zeros((1,)), dtype=np.int64)
             out_data = cast(out.ctypes.data, POINTER(c_int64))
+
+        elif field_ == 'statistics':
+            sqp_iter = self.get_stats("sqp_iter")
+            stat_m = self.get_stats("stat_m")
+            stat_n = self.get_stats("stat_n")
+
+            min_size = min([stat_m, sqp_iter+1])
+
+            out = np.ascontiguousarray(
+                        np.zeros( (stat_n[0]+1, min_size[0]) ), dtype=np.float64)
+            out_data = cast(out.ctypes.data, POINTER(c_double))
+
         else:
             out = np.ascontiguousarray(np.zeros((1,)), dtype=np.float64)
             out_data = cast(out.ctypes.data, POINTER(c_double))
@@ -493,7 +546,7 @@ class AcadosOcpSolver:
 
         cost_fields = ['y_ref', 'yref']
         constraints_fields = ['lbx', 'ubx', 'lbu', 'ubu']
-        out_fields = ['x', 'u']
+        out_fields = ['x', 'u', 'pi']
 
         # cast value_ to avoid conversion issues
         value_ = value_.astype(float)
@@ -512,7 +565,7 @@ class AcadosOcpSolver:
         else:
             if (field_ not in constraints_fields) and \
                     (field_ not in cost_fields) and (field_ not in out_fields):
-                raise Exception("acados_solver: {} is not a valid key for method `set(value)`.\
+                raise Exception("AcadosOcpSolver.set(): {} is not a valid argument.\
                     \nPossible values are {} and {}. Exiting.".format(field, \
                     cost_fields, constraints_fields, out_fields))
 
@@ -524,7 +577,7 @@ class AcadosOcpSolver:
                 self.nlp_dims, self.nlp_out, stage_, field)
 
             if value_.shape[0] != dims:
-                msg = 'acados_solver.set(): mismatching dimension for field "{}"'.format(field_)
+                msg = 'AcadosOcpSolver.set(): mismatching dimension for field "{}" '.format(field_)
                 msg += 'with dimension {} (you have {})'.format(dims, value_.shape[0])
                 raise Exception(msg)
 
@@ -660,6 +713,7 @@ class AcadosOcpSolver:
             self.nlp_opts, field, byref(value_ctypes))
 
         return
+
 
     def __del__(self):
         self.shared_lib.acados_free()
